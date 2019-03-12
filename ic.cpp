@@ -69,11 +69,84 @@ int crop_batch(const string& in_dir, const string& outputDir)
 	return 0;
 }
 
+void get_edge_img(const cv::Mat & img_gray, cv::Mat & img_edge) {
+	Canny(img_gray, img_edge, 20, 40, 3);
+	//cout << img_edge.type() << endl;
+	//bilateralFilter(img_edge, img_edge, 7, 15, 3);
+}
+
+void binary(const cv::Mat & img_gray, cv::Mat & dst) {
+	cv::Mat element = getStructuringElement(MORPH_ELLIPSE, Size(25, 25));
+	morphologyEx(img_gray, dst, MORPH_CROSS, element);
+
+	// v0.4
+	// cv::threshold(img_gray, dst, 0, 255, CV_THRESH_TRIANGLE);
+
+	// v0.5
+	cv::erode(dst, dst, 4);
+	cv::dilate(dst, dst, 4);
+	cv::threshold(dst, dst, 0, 255, CV_THRESH_OTSU);
+}
+
+int get_rect(const cv::Mat & dst, cv::Rect & box, cv::RotatedRect & rect, cv::Mat & mask) {
+	int height = dst.rows, width = dst.cols;
+
+	double maxArea = 0;
+	//vector<cv::Point> maxContour = vector<cv::Point>();
+	int maxIndex = -1;
+
+	vector<vector<cv::Point> > contours;
+	findContours(dst, contours, CV_RETR_TREE, CV_CHAIN_APPROX_NONE); //CV_RETR_EXTERNAL
+	for (int i = 0; i < contours.size(); i++) {
+		cv::Rect box = cv::boundingRect(contours[i]);
+		double area = box.area();
+		double midx = (box.x + 0.5*box.width) / width, midy = (box.y + 0.5*box.height) / height;
+		double left_ratio = box.x / double(width), right_ratio = (box.x + box.width) / double(width);
+		double top_ratio = box.y / double(height), bottom_ratio = (box.y + box.height) / double(height);
+		if (area > height * width * 0.8
+			|| midx < 0.1 || midx > 0.9 || midy < 0.1 || midy > 0.9) {
+			//|| left_ratio < 0.02 || right_ratio > 0.98
+			//|| top_ratio < 0.02 || bottom_ratio > 0.98) {
+			continue;
+		}
+		if (area > maxArea) {
+			maxArea = area;
+			// maxContour = contours[i];
+			maxIndex = i;
+		}
+	}
+
+	if (-1 == maxIndex) {
+		return -1;
+	}
+
+	box = cv::boundingRect(contours[maxIndex]);
+
+	// Find the minimum area enclosing triangle
+	cv::Point2f vtx[4];
+	rect = cv::minAreaRect(contours[maxIndex]);
+	rect.points(vtx);
+
+	// https://stackoverflow.com/questions/28937548/how-to-create-circular-mask-for-mat-object-in-opencv-c
+	mask = cv::Mat::zeros(cv::Size(width, height), CV_8UC1);
+	double radius_scale = 1.5;
+	double center_x = box.x + box.width * 0.5;
+	double center_y = box.y + box.height * 0.5;
+	double half_axis_x = sqrt(radius_scale) * box.width * 0.5;
+	double half_axis_y = sqrt(radius_scale) * box.height * 0.5;
+	cv::ellipse(mask, cv::Point(center_x, center_y), Size(half_axis_x, half_axis_y), 0, 0, 360, Scalar(255), -1, 8);
+
+	//cv::imshow("1", mask);
+	//waitKey();
+	return 0;
+}
+
+
 int crop(const string& inputImageName, const string& outputDir)
 {
 	// 
 	std::cout << "Loading and processing image " << inputImageName << std::endl;
-	cv::Mat img_bgr, img_rgb, img_gray2;
+	cv::Mat img_bgr, img_rgb, img_gray2, img_edge;
 	img_bgr = cv::imread(inputImageName);
 	cv::cvtColor(img_bgr, img_rgb, CV_BGR2RGB);
 	cv::cvtColor(img_bgr, img_gray2, CV_BGR2GRAY);
@@ -90,59 +163,36 @@ int crop(const string& inputImageName, const string& outputDir)
 	img_gray = 255 - img_gray2;
 	// blur(img_gray, img_gray, Size(3, 3));
 
-
-	cv::Mat element = getStructuringElement(MORPH_ELLIPSE, Size(25, 25));
-	morphologyEx(img_gray, img_gray, MORPH_CROSS, element);
+	img_edge = img_gray2;
+	get_edge_img(img_gray, img_edge);
 
 	cv::Mat dst;
-
-	// v0.4
-	// cv::threshold(img_gray, dst, 0, 255, CV_THRESH_TRIANGLE);
-
-	// v0.5
-	cv::erode(img_gray, img_gray, 4);
-	cv::dilate(img_gray, img_gray, 4);
-	cv::threshold(img_gray, dst, 0, 255, CV_THRESH_OTSU);
-
-
-	double maxArea = 0;
-	//vector<cv::Point> maxContour = vector<cv::Point>();
-	int maxIndex = -1;
-
-	vector<vector<cv::Point> > contours;
-	findContours(dst, contours, CV_RETR_TREE, CV_CHAIN_APPROX_NONE); //CV_RETR_EXTERNAL
-	for (int i = 0; i < contours.size(); i++) {
-		cv::Rect box = cv::boundingRect(contours[i]);
-		double area = box.area();
-		double midx = (box.x + 0.5*box.width) / width, midy = (box.y + 0.5*box.height) / height;
-		double left_ratio = box.x / double(width), right_ratio = (box.x + box.width) / double(width);
-		double top_ratio = box.y / double(height), bottom_ratio = (box.y + box.height) / double(height);
-		if (area > height * width * 0.8 
-			|| midx < 0.1 || midx > 0.9 || midy < 0.1 || midy > 0.9
-			|| left_ratio < 0.02 || right_ratio > 0.98 
-			|| top_ratio < 0.02 || bottom_ratio > 0.98) {
-			continue;
-		}
-		if (area > maxArea) {
-			maxArea = area;
-			// maxContour = contours[i];
-			maxIndex = i;
-		}
-	}
-
-	if (-1 == maxIndex) {
+	binary(img_gray, dst);
+	
+	cv::Rect box;
+	cv::RotatedRect rect;
+	cv::Mat mask;
+	if (-1 == get_rect(dst, box, rect, mask)) {
 		std::cout << "no item found" << std::endl;
 		return -1;
 	}
 
-	cv::Rect box = cv::boundingRect(contours[maxIndex]);
+	
+	// refine iteratively
+	int start = box.y + box.height;
+	cv::Mat img_gray_copy = img_gray;
+	int NUM_ITER = 1;
+	for (int i = 0; i < NUM_ITER; i++) {
+		mask.rowRange(cv::Range(start, height)).setTo(0);
+		bitwise_and(mask, img_edge, img_edge);
+		img_gray_copy = img_gray_copy + 0.5 * img_edge;
+		binary(img_gray_copy, dst);
+		if ( - 1 == get_rect(dst, box, rect, mask)) {
+			break;
+		}
+	}
+
 	cv::rectangle(img_rgb, box, cv::Scalar(0, 255, 0), 8);
-
-
-	// Find the minimum area enclosing triangle
-	cv::Point2f vtx[4];
-	cv::RotatedRect rect = cv::minAreaRect(contours[maxIndex]);
-	rect.points(vtx);
 
 	// Draw the bounding box
 	//for (int i = 0; i < 4; i++) {
